@@ -20,33 +20,30 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 # API
 API_BASE = "https://min-api.cryptocompare.com"
 
-# Extended Exchange Available Coins
+# Extended Exchange Coins
 COINS = [
-    # Core & Major Assets
     "BTC", "ETH", "SOL", "XRP", "BNB", "ADA", "LTC", "DOT", "LINK", "SUI",
-    "AVAX", "APT", "NEAR", "TRX",
-    # Meme & Trending
-    "DOGE", "PEPE", "BONK", "SHIB", "POPCAT", "WIF", "PENGU", "TRUMP", "MELANIA",
-    # DeFi & Infrastructure
-    "AAVE", "UNI", "SNX", "CAKE", "ONDO", "PENDLE", "JUP", "EIGEN", "ARB", "OP",
-    "STRK", "TAO", "SEI", "MKR",
-    # Other Listed
-    "XMR", "ZEC", "VIRTUAL"
+    "AVAX", "APT", "NEAR", "TRX", "DOGE", "PEPE", "BONK", "SHIB", "WIF",
+    "AAVE", "UNI", "SNX", "CAKE", "ONDO", "PENDLE", "JUP", "ARB", "OP",
+    "STRK", "TAO", "SEI", "MKR", "XMR", "ZEC"
 ]
 
 # ============================================
-# STRICT CONFIGURATION
+# ULTRA-STRICT CONFIGURATION
 # ============================================
-MIN_SCORE = 75          # Only A+ setups
-MIN_ADX = 25            # Strong trend required
-RSI_OVERSOLD = 35       # Below this = don't short
-RSI_OVERBOUGHT = 65     # Above this = don't long
-REQUIRE_CONFLUENCE = True  # All indicators must align
+MIN_SCORE = 80              # Only premium setups (was 75)
+MIN_ADX = 30                # Very strong trend (was 25)
+RSI_OVERSOLD = 30           # Stricter (was 35)
+RSI_OVERBOUGHT = 70         # Stricter (was 65)
+MIN_CONFLUENCE = 4          # Minimum 4/5 confluence
+ATR_SL_MULTIPLIER = 2.0     # Wider SL (was 1.5)
+ATR_TP_MULTIPLIER = 3.0     # Better R:R (was 2.0)
 
 SIGNALS_TODAY = 0
+CHAT_ID = None  # Store chat_id globally
 
 # ============================================
-# INDICATORS (PURE PYTHON)
+# INDICATORS
 # ============================================
 
 def ema(series, period):
@@ -59,7 +56,7 @@ def rsi(series, period=14):
     delta = series.diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-    rs = gain / loss
+    rs = gain / (loss + 0.0001)
     return 100 - (100 / (1 + rs))
 
 def macd(series, fast=12, slow=26, signal=9):
@@ -69,13 +66,6 @@ def macd(series, fast=12, slow=26, signal=9):
     signal_line = ema(macd_line, signal)
     histogram = macd_line - signal_line
     return macd_line, signal_line, histogram
-
-def bollinger_bands(series, period=20, std_dev=2):
-    middle = sma(series, period)
-    std = series.rolling(window=period).std()
-    upper = middle + (std * std_dev)
-    lower = middle - (std * std_dev)
-    return upper, middle, lower
 
 def atr(high, low, close, period=14):
     tr1 = high - low
@@ -93,8 +83,8 @@ def adx(high, low, close, period=14):
     tr = atr(high, low, close, 1)
     atr_val = tr.rolling(window=period).mean()
     
-    plus_di = 100 * (plus_dm.rolling(window=period).mean() / atr_val)
-    minus_di = 100 * (minus_dm.rolling(window=period).mean() / atr_val)
+    plus_di = 100 * (plus_dm.rolling(window=period).mean() / (atr_val + 0.0001))
+    minus_di = 100 * (minus_dm.rolling(window=period).mean() / (atr_val + 0.0001))
     
     dx = 100 * abs(plus_di - minus_di) / (plus_di + minus_di + 0.0001)
     adx_val = dx.rolling(window=period).mean()
@@ -108,72 +98,104 @@ def stochastic(high, low, close, k_period=14, d_period=3):
     d = k.rolling(window=d_period).mean()
     return k, d
 
-def detect_swing_points(df, left=5, right=5):
-    """Detect swing highs and lows"""
+def find_support_resistance(df, lookback=50):
+    """Find key support/resistance levels"""
+    highs = df['high'].tail(lookback)
+    lows = df['low'].tail(lookback)
+    
+    # Find swing points
     swing_highs = []
     swing_lows = []
     
-    for i in range(left, len(df) - right):
-        # Swing High
-        is_high = True
-        for j in range(1, left + 1):
-            if df['high'].iloc[i] <= df['high'].iloc[i - j]:
-                is_high = False
-                break
-        for j in range(1, right + 1):
-            if df['high'].iloc[i] <= df['high'].iloc[i + j]:
-                is_high = False
-                break
-        if is_high:
-            swing_highs.append((i, df['high'].iloc[i]))
+    for i in range(2, len(highs) - 2):
+        if highs.iloc[i] > highs.iloc[i-1] and highs.iloc[i] > highs.iloc[i-2] and \
+           highs.iloc[i] > highs.iloc[i+1] and highs.iloc[i] > highs.iloc[i+2]:
+            swing_highs.append(highs.iloc[i])
         
-        # Swing Low
-        is_low = True
-        for j in range(1, left + 1):
-            if df['low'].iloc[i] >= df['low'].iloc[i - j]:
-                is_low = False
-                break
-        for j in range(1, right + 1):
-            if df['low'].iloc[i] >= df['low'].iloc[i + j]:
-                is_low = False
-                break
-        if is_low:
-            swing_lows.append((i, df['low'].iloc[i]))
+        if lows.iloc[i] < lows.iloc[i-1] and lows.iloc[i] < lows.iloc[i-2] and \
+           lows.iloc[i] < lows.iloc[i+1] and lows.iloc[i] < lows.iloc[i+2]:
+            swing_lows.append(lows.iloc[i])
     
-    return swing_highs, swing_lows
+    resistance = max(swing_highs) if swing_highs else df['high'].tail(20).max()
+    support = min(swing_lows) if swing_lows else df['low'].tail(20).min()
+    
+    return support, resistance
+
+def check_higher_timeframe_trend(symbol):
+    """Check 1H trend for confirmation"""
+    url = f"{API_BASE}/data/v2/histohour?fsym={symbol}&tsym=USDT&limit=50"
+    try:
+        resp = requests.get(url, timeout=15)
+        data = resp.json()
+        if data.get('Response') == 'Success':
+            ohlcv = data['Data']['Data']
+            df = pd.DataFrame(ohlcv)
+            df['close'] = df['close'].astype(float)
+            
+            ema_20 = ema(df['close'], 20).iloc[-1]
+            ema_50 = ema(df['close'], 50).iloc[-1]
+            price = df['close'].iloc[-1]
+            
+            if price > ema_20 > ema_50:
+                return "BULLISH"
+            elif price < ema_20 < ema_50:
+                return "BEARISH"
+    except:
+        pass
+    return "NEUTRAL"
 
 def market_structure(df):
-    """Analyze HH/HL or LH/LL structure"""
-    swing_highs, swing_lows = detect_swing_points(df, 5, 5)
+    """Detect HH/HL or LH/LL"""
+    highs = df['high'].tail(50)
+    lows = df['low'].tail(50)
     
-    if len(swing_highs) < 3 or len(swing_lows) < 3:
-        return "UNCLEAR", 0
+    # Find swing points
+    swing_highs = []
+    swing_lows = []
     
-    # Check last 3 swing points
-    recent_highs = [h[1] for h in swing_highs[-3:]]
-    recent_lows = [l[1] for l in swing_lows[-3:]]
+    for i in range(5, len(highs) - 5):
+        is_high = True
+        is_low = True
+        for j in range(1, 6):
+            if highs.iloc[i] <= highs.iloc[i-j] or highs.iloc[i] <= highs.iloc[i+j]:
+                is_high = False
+            if lows.iloc[i] >= lows.iloc[i-j] or lows.iloc[i] >= lows.iloc[i+j]:
+                is_low = False
+        if is_high:
+            swing_highs.append(highs.iloc[i])
+        if is_low:
+            swing_lows.append(lows.iloc[i])
     
-    # Higher Highs & Higher Lows = Bullish
-    hh = recent_highs[-1] > recent_highs[-2] > recent_highs[-3]
-    hl = recent_lows[-1] > recent_lows[-2] > recent_lows[-3]
+    if len(swing_highs) >= 2 and len(swing_lows) >= 2:
+        hh = swing_highs[-1] > swing_highs[-2]
+        hl = swing_lows[-1] > swing_lows[-2]
+        lh = swing_highs[-1] < swing_highs[-2]
+        ll = swing_lows[-1] < swing_lows[-2]
+        
+        if hh and hl:
+            return "BULLISH", 100
+        elif lh and ll:
+            return "BEARISH", 100
+        elif hh or hl:
+            return "BULLISH", 70
+        elif lh or ll:
+            return "BEARISH", 70
     
-    # Lower Highs & Lower Lows = Bearish
-    lh = recent_highs[-1] < recent_highs[-2] < recent_highs[-3]
-    ll = recent_lows[-1] < recent_lows[-2] < recent_lows[-3]
+    return "NEUTRAL", 0
+
+def momentum_check(df):
+    """Check momentum"""
+    close = df['close']
+    roc_5 = (close.iloc[-1] / close.iloc[-5] - 1) * 100
+    roc_10 = (close.iloc[-1] / close.iloc[-10] - 1) * 100
     
-    if hh and hl:
-        return "BULLISH", 100
-    elif lh and ll:
-        return "BEARISH", 100
-    elif hh or hl:
-        return "BULLISH", 60
-    elif lh or ll:
-        return "BEARISH", 60
-    else:
-        return "RANGING", 30
+    if roc_5 > 0 and roc_10 > 0:
+        return "BULLISH", abs(roc_5)
+    elif roc_5 < 0 and roc_10 < 0:
+        return "BEARISH", abs(roc_5)
+    return "NEUTRAL", 0
 
 def volume_analysis(df):
-    """Volume strength"""
     vol_sma = sma(df['volume'], 20)
     current = df['volume'].iloc[-1]
     avg = vol_sma.iloc[-1]
@@ -185,25 +207,8 @@ def volume_analysis(df):
     if ratio > 2:
         return "EXPLOSIVE", 100
     elif ratio > 1.5:
-        return "HIGH", 80
-    elif ratio > 1:
-        return "ABOVE_AVG", 60
-    else:
-        return "LOW", 30
-
-def momentum_check(df):
-    """Check momentum alignment"""
-    close = df['close']
-    
-    roc_5 = (close.iloc[-1] / close.iloc[-5] - 1) * 100
-    roc_10 = (close.iloc[-1] / close.iloc[-10] - 1) * 100
-    
-    if roc_5 > 0 and roc_10 > 0:
-        return "BULLISH", abs(roc_5)
-    elif roc_5 < 0 and roc_10 < 0:
-        return "BEARISH", abs(roc_5)
-    else:
-        return "MIXED", 0
+        return "HIGH", 75
+    return "NORMAL", 50
 
 # ============================================
 # DATA FETCHING
@@ -228,11 +233,11 @@ def fetch_data(symbol, limit=200):
     return None
 
 # ============================================
-# PRO ANALYSIS ENGINE (STRICT VERSION)
+# ULTRA-STRICT ANALYSIS
 # ============================================
 
 def analyze_coin(symbol):
-    """Professional analysis with strict confluence"""
+    """Ultra-strict analysis with HTF confirmation"""
     df = fetch_data(symbol, 200)
     if df is None or len(df) < 100:
         return None
@@ -249,10 +254,12 @@ def analyze_coin(symbol):
     
     rsi_val = rsi(close, 14)
     macd_line, signal_line, macd_hist = macd(close)
-    bb_upper, bb_middle, bb_lower = bollinger_bands(close)
     atr_val = atr(high, low, close, 14)
     adx_val, plus_di, minus_di = adx(high, low, close, 14)
     stoch_k, stoch_d = stochastic(high, low, close)
+    
+    # Get S/R levels
+    support, resistance = find_support_resistance(df)
     
     # Get latest values
     last = {
@@ -265,14 +272,13 @@ def analyze_coin(symbol):
         'macd': macd_line.iloc[-1],
         'macd_signal': signal_line.iloc[-1],
         'macd_hist': macd_hist.iloc[-1],
-        'bb_upper': bb_upper.iloc[-1],
-        'bb_lower': bb_lower.iloc[-1],
         'atr': atr_val.iloc[-1],
         'adx': adx_val.iloc[-1],
         'plus_di': plus_di.iloc[-1],
         'minus_di': minus_di.iloc[-1],
         'stoch_k': stoch_k.iloc[-1],
-        'stoch_d': stoch_d.iloc[-1]
+        'support': support,
+        'resistance': resistance
     }
     
     # Skip if NaN
@@ -280,14 +286,17 @@ def analyze_coin(symbol):
         return None
     
     # ============================================
-    # STRICT FILTERS (MUST PASS ALL)
+    # ULTRA-STRICT FILTERS
     # ============================================
     
-    # Filter 1: ADX must be > 25 (Strong trend required)
+    # Filter 1: ADX must be > 30 (Very strong trend)
     if last['adx'] < MIN_ADX:
         return None
     
-    # Filter 2: Determine trend direction from multiple sources
+    # Filter 2: Check higher timeframe trend
+    htf_trend = check_higher_timeframe_trend(symbol)
+    
+    # Get structure and momentum
     structure, struct_conf = market_structure(df)
     momentum, mom_strength = momentum_check(df)
     vol_status, vol_score = volume_analysis(df)
@@ -305,68 +314,78 @@ def analyze_coin(symbol):
     macd_bearish = last['macd'] < last['macd_signal'] and last['macd_hist'] < 0
     
     # ============================================
-    # CONFLUENCE CHECK (ALL MUST ALIGN)
+    # CONFLUENCE CHECK
     # ============================================
     
     signals = []
-    
-    # Count bullish/bearish confirmations
     bullish_count = 0
     bearish_count = 0
     
-    # Structure
+    # 1. Structure
     if structure == "BULLISH":
         bullish_count += 1
-        signals.append(f"� Structure: HH/HL Confirmed ({struct_conf}%)")
+        signals.append(f"📈 Structure: HH/HL")
     elif structure == "BEARISH":
         bearish_count += 1
-        signals.append(f"📉 Structure: LH/LL Confirmed ({struct_conf}%)")
+        signals.append(f"📉 Structure: LH/LL")
     
-    # EMA
+    # 2. EMA
     if ema_bullish:
         bullish_count += 1
-        signals.append("✅ EMA: 9 > 21 > 50 (Bullish Stack)")
+        signals.append("✅ EMA: Bullish Stack")
     elif ema_bearish:
         bearish_count += 1
-        signals.append("✅ EMA: 9 < 21 < 50 (Bearish Stack)")
+        signals.append("✅ EMA: Bearish Stack")
     
-    # ADX Direction
-    if adx_bullish:
+    # 3. ADX Direction
+    if adx_bullish and last['adx'] >= MIN_ADX:
         bullish_count += 1
-        signals.append(f"💪 ADX: {last['adx']:.0f} | DI+ > DI-")
-    elif adx_bearish:
+        signals.append(f"💪 ADX: {last['adx']:.0f} Bullish")
+    elif adx_bearish and last['adx'] >= MIN_ADX:
         bearish_count += 1
-        signals.append(f"💪 ADX: {last['adx']:.0f} | DI- > DI+")
+        signals.append(f"💪 ADX: {last['adx']:.0f} Bearish")
     
-    # MACD
+    # 4. MACD
     if macd_bullish:
         bullish_count += 1
-        signals.append("✅ MACD: Bullish Crossover")
+        signals.append("✅ MACD: Bullish")
     elif macd_bearish:
         bearish_count += 1
-        signals.append("✅ MACD: Bearish Crossover")
+        signals.append("✅ MACD: Bearish")
     
-    # Momentum
+    # 5. Momentum
     if momentum == "BULLISH":
         bullish_count += 1
-        signals.append(f"🚀 Momentum: Bullish ({mom_strength:.1f}%)")
+        signals.append(f"🚀 Momentum: Bullish")
     elif momentum == "BEARISH":
         bearish_count += 1
-        signals.append(f"📉 Momentum: Bearish ({mom_strength:.1f}%)")
+        signals.append(f"📉 Momentum: Bearish")
+    
+    # 6. HTF Trend (BONUS - must align!)
+    htf_aligned = False
+    if htf_trend == "BULLISH" and bullish_count > bearish_count:
+        htf_aligned = True
+        signals.append("🕐 1H Trend: BULLISH ✓")
+    elif htf_trend == "BEARISH" and bearish_count > bullish_count:
+        htf_aligned = True
+        signals.append("🕐 1H Trend: BEARISH ✓")
     
     # ============================================
-    # REQUIRE MINIMUM 4/5 CONFLUENCE
+    # REQUIRE 4/5 + HTF ALIGNMENT
     # ============================================
     
-    if REQUIRE_CONFLUENCE:
-        if bullish_count < 4 and bearish_count < 4:
-            return None  # Not enough confluence
+    if bullish_count < MIN_CONFLUENCE and bearish_count < MIN_CONFLUENCE:
+        return None
+    
+    # HTF must align for high-quality signals
+    if not htf_aligned:
+        return None
     
     # Determine direction
-    if bullish_count >= 4:
+    if bullish_count >= MIN_CONFLUENCE:
         direction = "LONG"
         confluence = bullish_count
-    elif bearish_count >= 4:
+    elif bearish_count >= MIN_CONFLUENCE:
         direction = "SHORT"
         confluence = bearish_count
     else:
@@ -377,31 +396,38 @@ def analyze_coin(symbol):
     # ============================================
     
     if direction == "SHORT" and last['rsi'] < RSI_OVERSOLD:
-        signals.append(f"❌ BLOCKED: RSI {last['rsi']:.1f} Oversold")
-        return None
+        return None  # Don't short oversold
     
     if direction == "LONG" and last['rsi'] > RSI_OVERBOUGHT:
-        signals.append(f"❌ BLOCKED: RSI {last['rsi']:.1f} Overbought")
-        return None
+        return None  # Don't long overbought
     
     # ============================================
     # STOCHASTIC CHECK
     # ============================================
     
-    stoch_oversold = last['stoch_k'] < 25
-    stoch_overbought = last['stoch_k'] > 75
+    if direction == "SHORT" and last['stoch_k'] < 25:
+        return None
     
-    if direction == "SHORT" and stoch_oversold:
-        return None  # Don't short oversold
+    if direction == "LONG" and last['stoch_k'] > 75:
+        return None
     
-    if direction == "LONG" and stoch_overbought:
-        return None  # Don't long overbought
+    # ============================================
+    # S/R LEVEL CHECK
+    # ============================================
     
-    # Add RSI info
-    signals.append(f"📊 RSI: {last['rsi']:.1f}")
-    signals.append(f"📊 Stoch: {last['stoch_k']:.0f}")
+    price = last['price']
     
-    # Volume
+    # For LONG: price should be above support
+    if direction == "LONG" and price < support * 1.01:
+        return None  # Too close to support, risky
+    
+    # For SHORT: price should be below resistance
+    if direction == "SHORT" and price > resistance * 0.99:
+        return None  # Too close to resistance, risky
+    
+    # Add level info
+    signals.append(f"📊 RSI: {last['rsi']:.0f} | Stoch: {last['stoch_k']:.0f}")
+    
     if vol_status in ["EXPLOSIVE", "HIGH"]:
         signals.append(f"📊 Volume: {vol_status}")
     
@@ -409,44 +435,41 @@ def analyze_coin(symbol):
     # CALCULATE SCORE
     # ============================================
     
-    base_score = confluence * 15  # 4*15=60, 5*15=75
+    base_score = confluence * 16  # 5*16=80
     
-    # Bonus points
-    if last['adx'] > 35:
+    if last['adx'] > 40:
         base_score += 10
-        signals.append("🔥 ADX > 35: Very Strong Trend")
+        signals.append("🔥 ADX > 40: Very Strong")
+    
+    if htf_aligned:
+        base_score += 5
     
     if vol_status in ["EXPLOSIVE", "HIGH"]:
         base_score += 5
     
-    if struct_conf == 100:
-        base_score += 5
-    
     score = min(base_score, 100)
     
-    # Check minimum score
     if score < MIN_SCORE:
         return None
     
     # ============================================
-    # CALCULATE TRADE LEVELS
+    # TRADE LEVELS (WIDER SL)
     # ============================================
     
-    price = last['price']
     atr_value = last['atr']
     
     if direction == "LONG":
         entry = price
-        sl = price - (atr_value * 1.5)
-        tp1 = price + (atr_value * 2)
-        tp2 = price + (atr_value * 3)
-        tp3 = price + (atr_value * 5)
+        sl = max(price - (atr_value * ATR_SL_MULTIPLIER), support * 0.995)  # Use support as SL
+        tp1 = price + (atr_value * ATR_TP_MULTIPLIER)
+        tp2 = price + (atr_value * 4.5)
+        tp3 = price + (atr_value * 6)
     else:
         entry = price
-        sl = price + (atr_value * 1.5)
-        tp1 = price - (atr_value * 2)
-        tp2 = price - (atr_value * 3)
-        tp3 = price - (atr_value * 5)
+        sl = min(price + (atr_value * ATR_SL_MULTIPLIER), resistance * 1.005)  # Use resistance as SL
+        tp1 = price - (atr_value * ATR_TP_MULTIPLIER)
+        tp2 = price - (atr_value * 4.5)
+        tp3 = price - (atr_value * 6)
     
     risk = abs(entry - sl)
     rr = abs(tp1 - entry) / risk if risk > 0 else 1
@@ -466,25 +489,26 @@ def analyze_coin(symbol):
         'rsi': last['rsi'],
         'adx': last['adx'],
         'stoch': last['stoch_k'],
+        'htf_trend': htf_trend,
         'signals': signals
     }
 
 def format_signal(s):
-    """Format professional signal"""
     emoji = "🟢" if s['direction'] == "LONG" else "🔴"
     
-    if s['score'] >= 85:
-        grade = "⭐⭐⭐ A+ PREMIUM"
-    elif s['score'] >= 75:
-        grade = "⭐⭐ A QUALITY"
+    if s['score'] >= 90:
+        grade = "⭐⭐⭐ S-TIER SETUP"
+    elif s['score'] >= 85:
+        grade = "⭐⭐ A+ PREMIUM"
     else:
-        grade = "⭐ B STANDARD"
+        grade = "⭐ A QUALITY"
     
     msg = f"""{emoji} **{s['symbol']}** | {s['direction']}
 ━━━━━━━━━━━━━━━━━━━━
 {grade}
 📊 Score: **{s['score']}/100**
 🎯 Confluence: **{s['confluence']}/5**
+🕐 1H Trend: **{s['htf_trend']}**
 
 💰 **TRADE LEVELS:**
 • Entry: ${s['entry']:.4f}
@@ -493,7 +517,7 @@ def format_signal(s):
 • TP2: ${s['tp2']:.4f}
 • TP3: ${s['tp3']:.4f}
 
-📈 RSI: {s['rsi']:.1f} | ADX: {s['adx']:.0f} | Stoch: {s['stoch']:.0f}
+📈 RSI: {s['rsi']:.0f} | ADX: {s['adx']:.0f} | Stoch: {s['stoch']:.0f}
 
 📋 **CONFIRMATIONS:**
 """
@@ -501,7 +525,8 @@ def format_signal(s):
         msg += f"{sig}\n"
     
     msg += """━━━━━━━━━━━━━━━━━━━━
-⚠️ Risk: 1-2% max per trade"""
+⚠️ Risk: 1% max per trade
+🎯 Move SL to BE after TP1"""
     return msg
 
 # ============================================
@@ -510,15 +535,19 @@ def format_signal(s):
 
 def run_scan():
     signals = []
+    logger.info(f"Scanning {len(COINS)} coins...")
+    
     for coin in COINS:
         try:
             result = analyze_coin(coin)
             if result:
                 signals.append(result)
-                logger.info(f"✅ {coin}: {result['direction']} | Score: {result['score']} | Conf: {result['confluence']}/5")
-            time.sleep(0.4)
+                logger.info(f"✅ SIGNAL: {coin} {result['direction']} | Score: {result['score']} | Conf: {result['confluence']}/5 | HTF: {result['htf_trend']}")
+            time.sleep(0.5)
         except Exception as e:
             logger.error(f"Error {coin}: {e}")
+    
+    logger.info(f"Scan complete. Found {len(signals)} signals.")
     return sorted(signals, key=lambda x: x['score'], reverse=True)
 
 # ============================================
@@ -527,65 +556,87 @@ def run_scan():
 
 async def auto_scan(context):
     global SIGNALS_TODAY
-    logger.info("Auto scanning...")
+    logger.info("🔄 AUTO SCAN STARTING...")
     
     loop = asyncio.get_event_loop()
     signals = await loop.run_in_executor(None, run_scan)
     
     job = context.job
-    if job and job.chat_id and signals:
-        for sig in signals[:3]:
-            SIGNALS_TODAY += 1
-            await context.bot.send_message(chat_id=job.chat_id, text=format_signal(sig))
+    if job and job.chat_id:
+        if signals:
+            logger.info(f"📤 Sending {min(len(signals), 3)} signals to chat {job.chat_id}")
+            for sig in signals[:3]:
+                SIGNALS_TODAY += 1
+                await context.bot.send_message(chat_id=job.chat_id, text=format_signal(sig))
+                await asyncio.sleep(1)
+        else:
+            logger.info("No signals found this scan")
+            # Notify every hour if no signals
+            current_min = datetime.now().minute
+            if current_min < 10:  # Only on the hour
+                await context.bot.send_message(
+                    chat_id=job.chat_id, 
+                    text="🔍 Auto scan complete - No premium setups found.\nWaiting for better opportunities..."
+                )
 
 async def start_cmd(update: Update, context):
+    global CHAT_ID
     chat_id = update.effective_message.chat_id
+    CHAT_ID = chat_id
+    
     await update.message.reply_text(
-        f"🏆 **PRO SIGNAL SCANNER v2**\n"
+        f"🏆 **PRO SIGNAL SCANNER v3**\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
         f"📊 Coins: {len(COINS)}\n"
-        f"⏱ Timeframe: 15m\n\n"
-        f"**STRICT FILTERS:**\n"
+        f"⏱ Timeframe: 15m + 1H\n\n"
+        f"**ULTRA-STRICT FILTERS:**\n"
         f"• Min Score: {MIN_SCORE}/100\n"
         f"• Min ADX: {MIN_ADX}\n"
-        f"• Min Confluence: 4/5\n"
+        f"• Min Confluence: {MIN_CONFLUENCE}/5\n"
+        f"• 1H Trend Alignment: Required\n"
+        f"• S/R Level Check: Enabled\n"
         f"• RSI Conflict: Blocked\n\n"
-        f"**Confluence Required:**\n"
-        f"• Market Structure\n"
-        f"• EMA Stack\n"
-        f"• ADX Direction\n"
-        f"• MACD Crossover\n"
-        f"• Momentum\n\n"
-        f"Scanning every 10 min..."
+        f"**Auto scanning every 10 min...**\n"
+        f"You will receive signals automatically!"
     )
     
+    # Remove old jobs
     jobs = context.job_queue.get_jobs_by_name(str(chat_id))
     for j in jobs:
         j.schedule_removal()
     
-    context.job_queue.run_repeating(auto_scan, interval=600, first=10, chat_id=chat_id, name=str(chat_id))
+    # Start auto scan
+    context.job_queue.run_repeating(
+        auto_scan, 
+        interval=600,  # 10 minutes
+        first=5,       # Start in 5 seconds
+        chat_id=chat_id, 
+        name=str(chat_id)
+    )
+    
+    logger.info(f"✅ Auto scan started for chat {chat_id}")
 
 async def stop_cmd(update: Update, context):
     chat_id = update.effective_message.chat_id
     jobs = context.job_queue.get_jobs_by_name(str(chat_id))
     for j in jobs:
         j.schedule_removal()
-    await update.message.reply_text("🛑 Stopped")
+    await update.message.reply_text("🛑 Auto scanning stopped")
+    logger.info(f"Auto scan stopped for chat {chat_id}")
 
 async def scan_cmd(update: Update, context):
-    await update.message.reply_text(f"🔍 Pro Scan with STRICT filters...")
+    await update.message.reply_text(f"🔍 Manual scan starting...")
     
     loop = asyncio.get_event_loop()
     signals = await loop.run_in_executor(None, run_scan)
     
     if signals:
         summary = f"📊 **SCAN COMPLETE**\n"
-        summary += f"Strict Mode: MIN_SCORE={MIN_SCORE}, 4/5 Confluence\n"
-        summary += f"Found: {len(signals)} A+ setups\n\n"
+        summary += f"Found: {len(signals)} premium setups\n\n"
         
         for s in signals[:10]:
             emoji = "🟢" if s['direction'] == "LONG" else "🔴"
-            stars = "⭐⭐⭐" if s['score'] >= 85 else "⭐⭐" if s['score'] >= 75 else "⭐"
+            stars = "⭐⭐⭐" if s['score'] >= 90 else "⭐⭐" if s['score'] >= 85 else "⭐"
             summary += f"{emoji} {s['symbol']}: {s['direction']} ({s['score']}) {stars}\n"
         
         await update.message.reply_text(summary)
@@ -594,19 +645,28 @@ async def scan_cmd(update: Update, context):
             await update.message.reply_text(format_signal(sig))
     else:
         await update.message.reply_text(
-            "❌ No A+ setups found.\n\n"
-            "This is GOOD - means we're being selective.\n"
-            "No trade > Bad trade"
+            "❌ No premium setups found.\n\n"
+            "Ultra-strict filters active:\n"
+            f"• Score ≥ {MIN_SCORE}\n"
+            f"• ADX ≥ {MIN_ADX}\n"
+            f"• 4/5 confluence + HTF alignment\n\n"
+            "This is GOOD - we wait for the best!"
         )
 
 async def status_cmd(update: Update, context):
+    chat_id = update.effective_message.chat_id
+    jobs = context.job_queue.get_jobs_by_name(str(chat_id))
+    auto_status = "🟢 Active" if jobs else "🔴 Stopped"
+    
     await update.message.reply_text(
         f"📊 **STATUS**\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"Auto Scan: {auto_status}\n"
         f"Min Score: {MIN_SCORE}/100\n"
         f"Min ADX: {MIN_ADX}\n"
-        f"Min Confluence: 4/5\n"
-        f"Signals Today: {SIGNALS_TODAY}"
+        f"Min Confluence: {MIN_CONFLUENCE}/5\n"
+        f"Signals Today: {SIGNALS_TODAY}\n"
+        f"━━━━━━━━━━━━━━━━━━━━"
     )
 
 if __name__ == '__main__':
@@ -625,5 +685,5 @@ if __name__ == '__main__':
     app.add_handler(CommandHandler("scan", scan_cmd))
     app.add_handler(CommandHandler("status", status_cmd))
     
-    print(f"🏆 Pro Scanner v2 | MIN_SCORE={MIN_SCORE} | ADX>{MIN_ADX} | 4/5 Confluence")
+    print(f"🏆 Pro Scanner v3 | MIN_SCORE={MIN_SCORE} | ADX>{MIN_ADX} | HTF Required")
     app.run_polling()
