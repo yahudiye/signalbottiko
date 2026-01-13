@@ -32,8 +32,8 @@ COINS = [
 # Configuration
 SCAN_INTERVAL = 120  # 2 minutes
 SIGNALS_TODAY = 0
-MIN_SCORE = 78
-MIN_ADX = 20  # Market regime filter
+MIN_SCORE = 82  # Higher threshold
+MIN_ADX = 25  # Must have strong trend
 
 # Duplicate filter
 RECENT_SIGNALS = {}  # coin -> {direction, timestamp}
@@ -131,36 +131,35 @@ def analyze_coin_tv(symbol):
         return None
     
     # ============================================
-    # SIGNAL DETECTION
+    # SIGNAL DETECTION - STRICTER RULES
     # ============================================
     
     signals = []
     direction = None
     score = 0
     
-    # Strong signal check
-    strong_buy = rec_15m in ['STRONG_BUY', 'BUY'] and rec_1h in ['STRONG_BUY', 'BUY']
-    strong_sell = rec_15m in ['STRONG_SELL', 'SELL'] and rec_1h in ['STRONG_SELL', 'SELL']
+    # STRICT: Require STRONG signals, not just BUY/SELL
+    strong_buy = rec_15m == 'STRONG_BUY' and rec_1h in ['STRONG_BUY', 'BUY']
+    strong_sell = rec_15m == 'STRONG_SELL' and rec_1h in ['STRONG_SELL', 'SELL']
     
-    # 4H bonus
+    # 4H REQUIRED for entry
     htf_bull = rec_4h in ['STRONG_BUY', 'BUY']
     htf_bear = rec_4h in ['STRONG_SELL', 'SELL']
     
-    if strong_buy and not (rsi and rsi > 75):  # Not overbought
+    # REQUIRE 4H alignment
+    if strong_buy and htf_bull and not (rsi and rsi > 70):
         direction = "LONG"
         signals.append(f"📈 15m: {rec_15m} ({buy_15m} votes)")
         signals.append(f"📈 1H: {rec_1h} ({buy_1h} votes)")
-        if htf_bull:
-            signals.append(f"📈 4H: {rec_4h} ✓")
-        score = 70 + buy_15m * 2
+        signals.append(f"📈 4H: {rec_4h} ✓")
+        score = 75 + buy_15m * 2
         
-    elif strong_sell and not (rsi and rsi < 25):  # Not oversold
+    elif strong_sell and htf_bear and not (rsi and rsi < 30):
         direction = "SHORT"
         signals.append(f"📉 15m: {rec_15m} ({sell_15m} votes)")
         signals.append(f"📉 1H: {rec_1h} ({sell_1h} votes)")
-        if htf_bear:
-            signals.append(f"📉 4H: {rec_4h} ✓")
-        score = 70 + sell_15m * 2
+        signals.append(f"📉 4H: {rec_4h} ✓")
+        score = 75 + sell_15m * 2
     else:
         return None
     
@@ -216,18 +215,18 @@ def analyze_coin_tv(symbol):
         return None
     
     # ============================================
-    # DYNAMIC SL / TP (ATR-based)
+    # WIDER SL / TP (to avoid stop hunting)
     # ============================================
     
-    # Dynamic ATR multipliers based on regime
+    # WIDER ATR multipliers
     if regime == "VOLATILE_TREND":
-        sl_mult = 2.5
-        tp_mult = 3.0
+        sl_mult = 4.0  # Very wide for volatile
+        tp_mult = 5.0
     elif regime == "STRONG_TREND":
-        sl_mult = 2.0
-        tp_mult = 2.5
+        sl_mult = 3.5  # Wide SL
+        tp_mult = 4.5
     else:
-        sl_mult = 1.5
+        sl_mult = 3.0
         tp_mult = 2.0
     
     # Calculate SL/TP using ATR
