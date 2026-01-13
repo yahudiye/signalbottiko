@@ -34,6 +34,9 @@ SCAN_INTERVAL = 180  # 3 minutes
 SIGNALS_TODAY = 0
 SIGNAL_CACHE = {}
 CACHE_DURATION = 1800  # 30 min
+SENT_SIGNALS = {}  # coin -> timestamp (to avoid duplicates)
+SIGNAL_COOLDOWN = 7200  # 2 hours cooldown per coin
+MIN_SCORE = 80  # Minimum score to send
 
 # ============================================
 # TRADINGVIEW ANALYSIS
@@ -335,7 +338,7 @@ def run_scan():
 # ============================================
 
 async def background_scanner(app):
-    global SIGNALS_TODAY
+    global SIGNALS_TODAY, SENT_SIGNALS
     
     logger.info("🚀 TradingView Scanner starting...")
     await asyncio.sleep(10)
@@ -344,7 +347,7 @@ async def background_scanner(app):
         try:
             await app.bot.send_message(
                 chat_id=int(ADMIN_CHAT_ID),
-                text="🤖 TradingView Bot started!\nAuto scanning enabled."
+                text="🤖 TradingView Bot started!\nAuto scanning every 3 min.\n2 hour cooldown per coin."
             )
         except:
             pass
@@ -352,19 +355,39 @@ async def background_scanner(app):
     while True:
         try:
             logger.info("🔄 AUTO SCAN cycle...")
+            current_time = time.time()
+            
+            # Clean expired cooldowns
+            expired_cooldowns = [k for k, v in SENT_SIGNALS.items() if current_time - v > SIGNAL_COOLDOWN]
+            for k in expired_cooldowns:
+                del SENT_SIGNALS[k]
+                logger.info(f"♻️ Cooldown expired: {k}")
             
             loop = asyncio.get_event_loop()
             signals = await loop.run_in_executor(None, run_scan)
             
             if signals and ADMIN_CHAT_ID:
-                logger.info(f"📤 Sending {len(signals)} signals")
-                try:
-                    for sig in signals[:2]:
-                        SIGNALS_TODAY += 1
-                        await app.bot.send_message(chat_id=int(ADMIN_CHAT_ID), text=format_signal(sig))
-                        await asyncio.sleep(2)
-                except Exception as e:
-                    logger.error(f"Send error: {e}")
+                # Filter out coins on cooldown
+                new_signals = []
+                for sig in signals:
+                    coin = sig['symbol'].split('/')[0]
+                    if coin not in SENT_SIGNALS:
+                        new_signals.append(sig)
+                    else:
+                        cooldown_left = int((SIGNAL_COOLDOWN - (current_time - SENT_SIGNALS[coin])) / 60)
+                        logger.info(f"⏳ {coin} on cooldown ({cooldown_left}min left)")
+                
+                if new_signals:
+                    logger.info(f"📤 Sending {len(new_signals[:2])} new signals")
+                    try:
+                        for sig in new_signals[:2]:  # Max 2 different coins per cycle
+                            coin = sig['symbol'].split('/')[0]
+                            SENT_SIGNALS[coin] = current_time
+                            SIGNALS_TODAY += 1
+                            await app.bot.send_message(chat_id=int(ADMIN_CHAT_ID), text=format_signal(sig))
+                            await asyncio.sleep(2)
+                    except Exception as e:
+                        logger.error(f"Send error: {e}")
             
             logger.info(f"⏰ Next scan in {SCAN_INTERVAL}s...")
             await asyncio.sleep(SCAN_INTERVAL)
