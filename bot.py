@@ -231,10 +231,42 @@ def format_signal(s):
     sl_pct = abs(s['entry'] - s['sl']) / s['entry'] * 100
     tp1_pct = abs(s['tp1'] - s['entry']) / s['entry'] * 100
     
+    # Leverage recommendation based on score and SL%
+    # Lower SL% = can use higher leverage
+    # Higher score = more confidence
+    if sl_pct <= 2:
+        if s['score'] >= 90:
+            leverage = "10-15x"
+            lev_emoji = "🔥"
+        elif s['score'] >= 85:
+            leverage = "7-10x"
+            lev_emoji = "💪"
+        else:
+            leverage = "5-7x"
+            lev_emoji = "✅"
+    elif sl_pct <= 3:
+        if s['score'] >= 90:
+            leverage = "7-10x"
+            lev_emoji = "💪"
+        elif s['score'] >= 85:
+            leverage = "5-7x"
+            lev_emoji = "✅"
+        else:
+            leverage = "3-5x"
+            lev_emoji = "⚡"
+    else:
+        if s['score'] >= 90:
+            leverage = "5-7x"
+            lev_emoji = "✅"
+        else:
+            leverage = "3-5x"
+            lev_emoji = "⚡"
+    
     msg = f"""{emoji} **{s['symbol']}** | {s['direction']}
 ━━━━━━━━━━━━━━━━━━━━
 {grade}
 📊 TradingView Score: **{s['score']}/100**
+{lev_emoji} Leverage: **{leverage}**
 
 🕐 **TIMEFRAME ANALYSIS:**
 • 15m: {s['rec_15m']}
