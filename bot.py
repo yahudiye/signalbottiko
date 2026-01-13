@@ -37,16 +37,16 @@ COINS = [
 ]
 
 # ============================================
-# STRICT CONFIGURATION (Reduced stops)
+# BALANCED CONFIGURATION (Quality + More Signals)
 # ============================================
-MIN_SCORE = 85              # Higher threshold (was 80)
-MIN_ADX = 35                # Stronger trend (was 30)
-RSI_OVERSOLD = 25           # Stricter (was 30)
-RSI_OVERBOUGHT = 75         # Stricter (was 70)
-MIN_CONFLUENCE = 5          # All 5 must align (was 4)
-ATR_SL_MULTIPLIER = 2.5     # Wider SL (was 2.0)
-ATR_TP_MULTIPLIER = 3.5     # Better R:R (was 3.0)
-SCAN_INTERVAL = 300         # 5 minutes (was 10)
+MIN_SCORE = 80              # Good threshold
+MIN_ADX = 30                # Strong trend
+RSI_OVERSOLD = 30           # Standard
+RSI_OVERBOUGHT = 70         # Standard
+MIN_CONFLUENCE = 4          # 4/5 is realistic
+ATR_SL_MULTIPLIER = 2.0     # Standard SL
+ATR_TP_MULTIPLIER = 3.0     # Good R:R
+SCAN_INTERVAL = 180         # 3 minutes (faster reaction)
 
 # State
 SIGNALS_TODAY = 0
@@ -317,15 +317,13 @@ def analyze_coin(symbol):
     bullish_count = 0
     bearish_count = 0
     
-    # 1. Structure (must be clear)
+    # 1. Structure
     if structure == "BULLISH":
         bullish_count += 1
         signals.append("📈 Structure: HH/HL")
     elif structure == "BEARISH":
         bearish_count += 1
         signals.append("📉 Structure: LH/LL")
-    else:
-        return None  # No clear structure = no trade
     
     # 2. EMA Stack
     if ema_bullish:
@@ -334,8 +332,6 @@ def analyze_coin(symbol):
     elif ema_bearish:
         bearish_count += 1
         signals.append("✅ EMA: Bearish")
-    else:
-        return None  # No clear EMA = no trade
     
     # 3. ADX
     if adx_bullish:
@@ -352,33 +348,37 @@ def analyze_coin(symbol):
     elif macd_bearish:
         bearish_count += 1
         signals.append("✅ MACD: Bearish")
-    else:
-        return None  # No MACD confirmation = no trade
     
-    # 5. Momentum (all 3 ROC must align)
+    # 5. Momentum
     if momentum == "BULLISH":
         bullish_count += 1
         signals.append("🚀 Momentum: Strong")
     elif momentum == "BEARISH":
         bearish_count += 1
         signals.append("📉 Momentum: Strong")
-    else:
-        return None  # Mixed momentum = no trade
     
     # HTF must align
     htf_aligned = False
-    if htf_trend == "BULLISH" and bullish_count >= 5:
+    if htf_trend == "BULLISH" and bullish_count >= MIN_CONFLUENCE:
         htf_aligned = True
-        signals.append("🕐 1H+4H: BULLISH ✓")
-    elif htf_trend == "BEARISH" and bearish_count >= 5:
+        signals.append("🕐 HTF: BULLISH ✓")
+    elif htf_trend == "BEARISH" and bearish_count >= MIN_CONFLUENCE:
         htf_aligned = True
-        signals.append("🕐 1H+4H: BEARISH ✓")
+        signals.append("🕐 HTF: BEARISH ✓")
+    elif htf_trend != "NEUTRAL" and (bullish_count >= 3 or bearish_count >= 3):
+        # Allow 3/5 confluence if HTF trend matches direction
+        if htf_trend == "BULLISH" and bullish_count > bearish_count:
+            htf_aligned = True
+            signals.append("🕐 HTF: BULLISH (3/5)")
+        elif htf_trend == "BEARISH" and bearish_count > bullish_count:
+            htf_aligned = True
+            signals.append("🕐 HTF: BEARISH (3/5)")
     
     if not htf_aligned:
         return None
     
-    # ALL 5 must align
-    if bullish_count < MIN_CONFLUENCE and bearish_count < MIN_CONFLUENCE:
+    # Check confluence
+    if bullish_count < 3 and bearish_count < 3:
         return None
     
     # Determine direction
