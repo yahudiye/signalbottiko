@@ -44,6 +44,8 @@ SCAN_INTERVAL = 600  # 10 minutes
 SIGNALS_TODAY = 0
 AUTO_ENABLED = {}  # chat_id -> True/False
 BOT_APP = None
+SIGNAL_CACHE = {}  # symbol -> {'signal': signal_data, 'time': timestamp}
+CACHE_DURATION = 1800  # 30 minutes
 
 # ============================================
 # INDICATORS
@@ -475,7 +477,10 @@ def format_signal(s):
     return msg
 
 def run_scan():
+    global SIGNAL_CACHE
     signals = []
+    current_time = time.time()
+    
     logger.info(f"📡 Scanning {len(COINS)} coins...")
     
     for coin in COINS:
@@ -483,12 +488,32 @@ def run_scan():
             result = analyze_coin(coin)
             if result:
                 signals.append(result)
-                logger.info(f"✅ SIGNAL: {coin} {result['direction']} Score:{result['score']}")
+                # Cache the signal
+                SIGNAL_CACHE[coin] = {'signal': result, 'time': current_time}
+                logger.info(f"✅ NEW SIGNAL: {coin} {result['direction']} Score:{result['score']}")
+            else:
+                # Check cache for recent signals
+                if coin in SIGNAL_CACHE:
+                    cached = SIGNAL_CACHE[coin]
+                    age = current_time - cached['time']
+                    if age < CACHE_DURATION:
+                        # Signal still valid from cache
+                        signals.append(cached['signal'])
+                        logger.info(f"📦 CACHED: {coin} ({int(age/60)}min ago)")
+                    else:
+                        # Cache expired
+                        del SIGNAL_CACHE[coin]
+            
             time.sleep(0.5)
         except Exception as e:
             logger.error(f"Error {coin}: {e}")
     
-    logger.info(f"📊 Scan complete. Found {len(signals)} signals.")
+    # Clean expired cache entries
+    expired = [k for k, v in SIGNAL_CACHE.items() if current_time - v['time'] > CACHE_DURATION]
+    for k in expired:
+        del SIGNAL_CACHE[k]
+    
+    logger.info(f"📊 Scan complete. Found {len(signals)} signals ({len(SIGNAL_CACHE)} cached).")
     return sorted(signals, key=lambda x: x['score'], reverse=True)
 
 # ============================================
