@@ -22,12 +22,18 @@ ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")  # Your chat ID for auto notification
 # API
 API_BASE = "https://min-api.cryptocompare.com"
 
-# Coins
+# EdgeX Pro Exchange Tokens (80 pairs)
 COINS = [
-    "BTC", "ETH", "SOL", "XRP", "BNB", "ADA", "LTC", "DOT", "LINK", "SUI",
-    "AVAX", "APT", "NEAR", "TRX", "DOGE", "PEPE", "BONK", "SHIB", "WIF",
-    "AAVE", "UNI", "SNX", "CAKE", "ONDO", "PENDLE", "JUP", "ARB", "OP",
-    "STRK", "TAO", "SEI", "MKR", "XMR", "ZEC"
+    # Major
+    "BTC", "ETH", "SOL", "XRP", "BNB", "LTC", "BCH", "DOT", "LINK", "SUI",
+    "AVAX", "APT", "NEAR", "TRX", "DOGE", "ATOM", "ETC", "XLM", "XMR", "ZEC",
+    # DeFi & Layer 2
+    "AAVE", "UNI", "CRV", "LDO", "PENDLE", "JUP", "OP", "ARB", "ICP", "FIL",
+    # Meme & Trending
+    "PEPE", "BONK", "SHIB", "WIF", "TRUMP", "PENGU", "HYPE", "VIRTUAL",
+    # Others
+    "TON", "TAO", "SEI", "CAKE", "CFX", "CRO", "ONDO", "ENS", "ENA", "HBAR",
+    "PYTH", "RAY", "ORDI", "WLD", "ALGO", "OKB", "MNT", "ZK", "GRASS"
 ]
 
 # ============================================
