@@ -131,6 +131,33 @@ def analyze_coin_tv(symbol):
         return None
     
     # ============================================
+    # EXTENSION FILTER - Don't buy at local tops!
+    # ============================================
+    
+    # Check if price is extended from EMA20
+    if ema_20 and close:
+        distance_from_ema = ((close - ema_20) / ema_20) * 100
+        
+        # LONG: Don't buy if price > 2% above EMA20 (extended)
+        # SHORT: Don't sell if price > 2% below EMA20
+        if distance_from_ema > 2.0:  # Too extended for LONG
+            return None
+        if distance_from_ema < -2.0:  # Too extended for SHORT
+            return None
+    
+    # RSI extension check
+    if rsi and rsi > 65:  # Already overbought area
+        return None
+    if rsi and rsi < 35:  # Already oversold area
+        return None
+    
+    # Stochastic extension check  
+    if stoch_k and stoch_k > 75:  # Overbought
+        return None
+    if stoch_k and stoch_k < 25:  # Oversold
+        return None
+    
+    # ============================================
     # SIGNAL DETECTION - STRICTER RULES
     # ============================================
     
