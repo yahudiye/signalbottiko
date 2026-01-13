@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 import asyncio
 
 # TradingView TA
-from tradingview_ta import TA_Handler, Interval, Exchange
+from tradingview_ta import TA_Handler, Interval
 
 # Logging
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -19,7 +19,7 @@ load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
 
-# EdgeX Pro Exchange Tokens
+# EdgeX Pro Coins
 COINS = [
     "BTC", "ETH", "SOL", "XRP", "BNB", "LTC", "BCH", "DOT", "LINK", "SUI",
     "AVAX", "APT", "NEAR", "TRX", "DOGE", "ATOM", "ETC", "XLM", "XMR", "ZEC",
@@ -30,46 +30,55 @@ COINS = [
 ]
 
 # Configuration
-SCAN_INTERVAL = 180  # 3 minutes
+SCAN_INTERVAL = 120  # 2 minutes
 SIGNALS_TODAY = 0
-SIGNAL_CACHE = {}
-CACHE_DURATION = 1800  # 30 min
-SENT_SIGNALS = {}  # coin -> timestamp (to avoid duplicates)
-SIGNAL_COOLDOWN = 7200  # 2 hours cooldown per coin
-MIN_SCORE = 80  # Minimum score to send
+MIN_SCORE = 78
+MIN_ADX = 20  # Market regime filter
+
+# Duplicate filter
+RECENT_SIGNALS = {}  # coin -> {direction, timestamp}
+DUPLICATE_COOLDOWN = 900  # 15 min - same direction same coin
+
+# Signal history for stats
+SIGNAL_HISTORY = []
 
 # ============================================
 # TRADINGVIEW ANALYSIS
 # ============================================
 
 def get_tv_analysis(symbol, timeframe=Interval.INTERVAL_15_MINUTES):
-    """Get TradingView Technical Analysis for a symbol"""
-    try:
-        # Try different exchanges
-        exchanges = ["BINANCE", "BYBIT", "OKX", "COINBASE"]
-        
-        for exchange in exchanges:
-            try:
-                handler = TA_Handler(
-                    symbol=f"{symbol}USDT",
-                    screener="crypto",
-                    exchange=exchange,
-                    interval=timeframe
-                )
-                analysis = handler.get_analysis()
-                return analysis
-            except:
-                continue
-        
-        return None
-    except Exception as e:
-        logger.error(f"TV Analysis error {symbol}: {e}")
-        return None
+    """Get TradingView Technical Analysis"""
+    exchanges = ["BINANCE", "BYBIT", "OKX", "COINBASE"]
+    
+    for exchange in exchanges:
+        try:
+            handler = TA_Handler(
+                symbol=f"{symbol}USDT",
+                screener="crypto",
+                exchange=exchange,
+                interval=timeframe
+            )
+            return handler.get_analysis()
+        except Exception:
+            continue
+    
+    return None
+
+def check_market_regime(adx, atr_pct):
+    """Determine market regime: TRENDING, RANGING, VOLATILE"""
+    if adx >= 25:
+        if atr_pct >= 3:
+            return "VOLATILE_TREND"
+        return "STRONG_TREND"
+    elif adx >= 20:
+        return "WEAK_TREND"
+    else:
+        return "RANGING"
 
 def analyze_coin_tv(symbol):
-    """Analyze coin using TradingView Technical Analysis"""
+    """Pro analysis with market regime and dynamic levels"""
     
-    # Get analysis for multiple timeframes
+    # Multi-timeframe analysis
     tf_15m = get_tv_analysis(symbol, Interval.INTERVAL_15_MINUTES)
     tf_1h = get_tv_analysis(symbol, Interval.INTERVAL_1_HOUR)
     tf_4h = get_tv_analysis(symbol, Interval.INTERVAL_4_HOURS)
@@ -82,124 +91,183 @@ def analyze_coin_tv(symbol):
     rec_1h = tf_1h.summary.get('RECOMMENDATION', 'NEUTRAL')
     rec_4h = tf_4h.summary.get('RECOMMENDATION', 'NEUTRAL') if tf_4h else 'NEUTRAL'
     
-    # Get scores
+    # Get vote counts
     buy_15m = tf_15m.summary.get('BUY', 0)
     sell_15m = tf_15m.summary.get('SELL', 0)
-    neutral_15m = tf_15m.summary.get('NEUTRAL', 0)
-    
     buy_1h = tf_1h.summary.get('BUY', 0)
     sell_1h = tf_1h.summary.get('SELL', 0)
     
-    # Get oscillators and moving averages
+    # Oscillators and MAs
     osc_rec = tf_15m.oscillators.get('RECOMMENDATION', 'NEUTRAL')
     ma_rec = tf_15m.moving_averages.get('RECOMMENDATION', 'NEUTRAL')
     
-    # Get key indicators
-    indicators = tf_15m.indicators
-    rsi = indicators.get('RSI', 50)
-    macd = indicators.get('MACD.macd', 0)
-    macd_signal = indicators.get('MACD.signal', 0)
-    stoch_k = indicators.get('Stoch.K', 50)
-    adx = indicators.get('ADX', 0)
-    ema_20 = indicators.get('EMA20', 0)
-    ema_50 = indicators.get('EMA50', 0)
-    close = indicators.get('close', 0)
+    # Key indicators
+    ind = tf_15m.indicators
+    rsi = ind.get('RSI', 50)
+    macd = ind.get('MACD.macd', 0)
+    macd_signal = ind.get('MACD.signal', 0)
+    stoch_k = ind.get('Stoch.K', 50)
+    adx = ind.get('ADX', 0)
+    atr = ind.get('ATR', 0)
+    ema_20 = ind.get('EMA20', 0)
+    ema_50 = ind.get('EMA50', 0)
+    close = ind.get('close', 0)
+    high = ind.get('high', 0)
+    low = ind.get('low', 0)
+    
+    if not close or close == 0:
+        return None
+    
+    # Calculate ATR percentage
+    atr_pct = (atr / close * 100) if atr and close else 2.0
     
     # ============================================
-    # SIGNAL LOGIC
+    # MARKET REGIME FILTER
+    # ============================================
+    regime = check_market_regime(adx if adx else 0, atr_pct)
+    
+    # Skip ranging markets
+    if regime == "RANGING":
+        return None
+    
+    # ============================================
+    # SIGNAL DETECTION
     # ============================================
     
     signals = []
     direction = None
     score = 0
     
-    # Check for STRONG signals
+    # Strong signal check
     strong_buy = rec_15m in ['STRONG_BUY', 'BUY'] and rec_1h in ['STRONG_BUY', 'BUY']
     strong_sell = rec_15m in ['STRONG_SELL', 'SELL'] and rec_1h in ['STRONG_SELL', 'SELL']
     
-    # 4H confirmation (bonus)
+    # 4H bonus
     htf_bull = rec_4h in ['STRONG_BUY', 'BUY']
     htf_bear = rec_4h in ['STRONG_SELL', 'SELL']
     
-    if strong_buy:
+    if strong_buy and not (rsi and rsi > 75):  # Not overbought
         direction = "LONG"
-        signals.append(f"📈 15m: {rec_15m}")
-        signals.append(f"� 1H: {rec_1h}")
+        signals.append(f"📈 15m: {rec_15m} ({buy_15m} votes)")
+        signals.append(f"📈 1H: {rec_1h} ({buy_1h} votes)")
         if htf_bull:
             signals.append(f"📈 4H: {rec_4h} ✓")
         score = 70 + buy_15m * 2
-    elif strong_sell:
+        
+    elif strong_sell and not (rsi and rsi < 25):  # Not oversold
         direction = "SHORT"
-        signals.append(f"� 15m: {rec_15m}")
-        signals.append(f"� 1H: {rec_1h}")
+        signals.append(f"📉 15m: {rec_15m} ({sell_15m} votes)")
+        signals.append(f"📉 1H: {rec_1h} ({sell_1h} votes)")
         if htf_bear:
             signals.append(f"📉 4H: {rec_4h} ✓")
         score = 70 + sell_15m * 2
     else:
         return None
     
-    # RSI filter
-    if direction == "LONG" and rsi > 70:
-        return None  # Overbought
-    if direction == "SHORT" and rsi < 30:
-        return None  # Oversold
+    # ============================================
+    # DUPLICATE FILTER
+    # ============================================
+    current_time = time.time()
+    if symbol in RECENT_SIGNALS:
+        last = RECENT_SIGNALS[symbol]
+        if last['direction'] == direction and (current_time - last['time']) < DUPLICATE_COOLDOWN:
+            return None  # Same signal recently
     
-    # Stochastic filter
-    if direction == "LONG" and stoch_k > 80:
-        return None
-    if direction == "SHORT" and stoch_k < 20:
-        return None
+    # ============================================
+    # SCORE BONUSES
+    # ============================================
     
-    # ADX bonus
-    if adx and adx > 25:
+    # ADX bonus (strong trend)
+    if adx and adx >= 25:
         score += 10
-        signals.append(f"� ADX: {adx:.0f} (Strong)")
+        signals.append(f"💪 ADX: {adx:.0f} (Strong)")
+    elif adx and adx >= MIN_ADX:
+        score += 5
+        signals.append(f"📊 ADX: {adx:.0f}")
     
-    # Oscillator/MA alignment
+    # Oscillator alignment
     if direction == "LONG" and osc_rec in ['BUY', 'STRONG_BUY']:
         score += 5
-        signals.append(f"📊 Oscillators: {osc_rec}")
+        signals.append(f"✅ Oscillators: {osc_rec}")
     elif direction == "SHORT" and osc_rec in ['SELL', 'STRONG_SELL']:
         score += 5
-        signals.append(f"📊 Oscillators: {osc_rec}")
+        signals.append(f"✅ Oscillators: {osc_rec}")
     
+    # MA alignment
     if direction == "LONG" and ma_rec in ['BUY', 'STRONG_BUY']:
         score += 5
-        signals.append(f"📊 Moving Avg: {ma_rec}")
+        signals.append(f"✅ Moving Avg: {ma_rec}")
     elif direction == "SHORT" and ma_rec in ['SELL', 'STRONG_SELL']:
         score += 5
-        signals.append(f"📊 Moving Avg: {ma_rec}")
+        signals.append(f"✅ Moving Avg: {ma_rec}")
     
     # 4H alignment bonus
     if (direction == "LONG" and htf_bull) or (direction == "SHORT" and htf_bear):
         score += 10
     
+    # Regime bonus
+    if regime == "STRONG_TREND":
+        score += 5
+        signals.append(f"🔥 Regime: {regime}")
+    
     score = min(score, 100)
     
-    if score < 75:
+    if score < MIN_SCORE:
         return None
+    
+    # ============================================
+    # DYNAMIC SL / TP (ATR-based)
+    # ============================================
+    
+    # Dynamic ATR multipliers based on regime
+    if regime == "VOLATILE_TREND":
+        sl_mult = 2.5
+        tp_mult = 3.0
+    elif regime == "STRONG_TREND":
+        sl_mult = 2.0
+        tp_mult = 2.5
+    else:
+        sl_mult = 1.5
+        tp_mult = 2.0
+    
+    # Calculate SL/TP using ATR
+    if atr and atr > 0:
+        atr_val = atr
+    else:
+        atr_val = close * 0.02  # Fallback 2%
+    
+    if direction == "LONG":
+        entry = close
+        sl = close - (atr_val * sl_mult)
+        tp1 = close + (atr_val * tp_mult)
+        tp2 = close + (atr_val * (tp_mult + 1.5))
+        tp3 = close + (atr_val * (tp_mult + 3))
+    else:
+        entry = close
+        sl = close + (atr_val * sl_mult)
+        tp1 = close - (atr_val * tp_mult)
+        tp2 = close - (atr_val * (tp_mult + 1.5))
+        tp3 = close - (atr_val * (tp_mult + 3))
+    
+    risk = abs(entry - sl)
+    rr = abs(tp1 - entry) / risk if risk > 0 else 1
+    sl_pct = (risk / close) * 100
     
     # Add indicator info
     signals.append(f"📈 RSI: {rsi:.0f} | Stoch: {stoch_k:.0f}")
     
-    # Calculate trade levels using ATR-like estimate
-    atr_estimate = close * 0.02  # 2% as rough ATR
+    # Record for duplicate filter
+    RECENT_SIGNALS[symbol] = {'direction': direction, 'time': current_time}
     
-    if direction == "LONG":
-        entry = close
-        sl = close * 0.97  # 3% SL
-        tp1 = close * 1.02  # 2% TP1
-        tp2 = close * 1.04  # 4% TP2
-        tp3 = close * 1.06  # 6% TP3
-    else:
-        entry = close
-        sl = close * 1.03  # 3% SL
-        tp1 = close * 0.98  # 2% TP1
-        tp2 = close * 0.96  # 4% TP2
-        tp3 = close * 0.94  # 6% TP3
-    
-    risk = abs(entry - sl)
-    rr = abs(tp1 - entry) / risk if risk > 0 else 1
+    # Record for history
+    SIGNAL_HISTORY.append({
+        'symbol': symbol,
+        'direction': direction,
+        'entry': entry,
+        'sl': sl,
+        'tp1': tp1,
+        'time': datetime.now().isoformat()
+    })
     
     return {
         'symbol': f"{symbol}/USDT",
@@ -208,13 +276,16 @@ def analyze_coin_tv(symbol):
         'price': close,
         'entry': entry,
         'sl': sl,
+        'sl_pct': sl_pct,
         'tp1': tp1,
         'tp2': tp2,
         'tp3': tp3,
         'rr': rr,
-        'rsi': rsi,
+        'rsi': rsi if rsi else 50,
         'adx': adx if adx else 0,
-        'stoch': stoch_k,
+        'stoch': stoch_k if stoch_k else 50,
+        'atr': atr_val,
+        'regime': regime,
         'rec_15m': rec_15m,
         'rec_1h': rec_1h,
         'rec_4h': rec_4h,
@@ -225,112 +296,83 @@ def format_signal(s):
     emoji = "🟢" if s['direction'] == "LONG" else "🔴"
     
     if s['score'] >= 90:
-        grade = "💎 PREMIUM SIGNAL"
+        grade = "💎 PREMIUM"
     elif s['score'] >= 85:
-        grade = "⭐⭐⭐ A+ QUALITY"
+        grade = "⭐⭐⭐ A+"
+    elif s['score'] >= 80:
+        grade = "⭐⭐ A"
     else:
-        grade = "⭐⭐ A QUALITY"
+        grade = "⭐ B+"
     
-    sl_pct = abs(s['entry'] - s['sl']) / s['entry'] * 100
-    tp1_pct = abs(s['tp1'] - s['entry']) / s['entry'] * 100
-    
-    # Leverage recommendation based on score and SL%
-    # Lower SL% = can use higher leverage
-    # Higher score = more confidence
+    # Dynamic leverage based on SL% and score
+    sl_pct = s['sl_pct']
     if sl_pct <= 2:
-        if s['score'] >= 90:
-            leverage = "10-15x"
-            lev_emoji = "🔥"
-        elif s['score'] >= 85:
-            leverage = "7-10x"
-            lev_emoji = "💪"
-        else:
-            leverage = "5-7x"
-            lev_emoji = "✅"
+        lev = "10-15x" if s['score'] >= 85 else "7-10x"
+        lev_emoji = "🔥"
     elif sl_pct <= 3:
-        if s['score'] >= 90:
-            leverage = "7-10x"
-            lev_emoji = "💪"
-        elif s['score'] >= 85:
-            leverage = "5-7x"
-            lev_emoji = "✅"
-        else:
-            leverage = "3-5x"
-            lev_emoji = "⚡"
+        lev = "7-10x" if s['score'] >= 85 else "5-7x"
+        lev_emoji = "💪"
+    elif sl_pct <= 4:
+        lev = "5-7x" if s['score'] >= 85 else "3-5x"
+        lev_emoji = "✅"
     else:
-        if s['score'] >= 90:
-            leverage = "5-7x"
-            lev_emoji = "✅"
-        else:
-            leverage = "3-5x"
-            lev_emoji = "⚡"
+        lev = "3-5x"
+        lev_emoji = "⚡"
+    
+    tp1_pct = abs(s['tp1'] - s['entry']) / s['entry'] * 100
     
     msg = f"""{emoji} **{s['symbol']}** | {s['direction']}
 ━━━━━━━━━━━━━━━━━━━━
-{grade}
-📊 TradingView Score: **{s['score']}/100**
-{lev_emoji} Leverage: **{leverage}**
+{grade} | Score: **{s['score']}/100**
+{lev_emoji} Leverage: **{lev}**
+🌊 Regime: **{s['regime']}**
 
-🕐 **TIMEFRAME ANALYSIS:**
+🕐 **TIMEFRAMES:**
 • 15m: {s['rec_15m']}
 • 1H: {s['rec_1h']}
 • 4H: {s['rec_4h']}
 
-💰 **TRADE LEVELS:**
+💰 **LEVELS (ATR-based):**
 • Entry: ${s['entry']:.4f}
-• SL: ${s['sl']:.4f} (-{sl_pct:.1f}%)
-• TP1: ${s['tp1']:.4f} (+{tp1_pct:.1f}%)
+• SL: ${s['sl']:.4f} (-{s['sl_pct']:.1f}%)
+• TP1: ${s['tp1']:.4f} (+{tp1_pct:.1f}%) [{s['rr']:.1f}R]
 • TP2: ${s['tp2']:.4f}
 • TP3: ${s['tp3']:.4f}
 
-📈 RSI: {s['rsi']:.0f} | ADX: {s['adx']:.0f} | Stoch: {s['stoch']:.0f}
+� RSI: {s['rsi']:.0f} | ADX: {s['adx']:.0f} | Stoch: {s['stoch']:.0f}
 
-📋 **CONFIRMATIONS:**
+📋 **ANALYSIS:**
 """
-    for sig in s['signals'][:7]:
+    for sig in s['signals'][:6]:
         msg += f"{sig}\n"
     
     msg += """━━━━━━━━━━━━━━━━━━━━
 ⚠️ Risk: 1% max
-🎯 Move SL to BE at TP1
-📊 Source: TradingView TA"""
+🎯 Move SL to BE at TP1"""
     return msg
 
 def run_scan():
-    global SIGNAL_CACHE
+    global RECENT_SIGNALS
     signals = []
     current_time = time.time()
     
-    logger.info(f"📡 TradingView Scan: {len(COINS)} coins...")
+    # Clean old duplicate entries
+    RECENT_SIGNALS = {k: v for k, v in RECENT_SIGNALS.items() 
+                      if current_time - v['time'] < DUPLICATE_COOLDOWN}
+    
+    logger.info(f"📡 Scanning {len(COINS)} coins...")
     
     for coin in COINS:
         try:
             result = analyze_coin_tv(coin)
-            if result:
+            if result and result['score'] >= MIN_SCORE:
                 signals.append(result)
-                SIGNAL_CACHE[coin] = {'signal': result, 'time': current_time}
-                logger.info(f"✅ TV SIGNAL: {coin} {result['direction']} Score:{result['score']}")
-            else:
-                # Check cache
-                if coin in SIGNAL_CACHE:
-                    cached = SIGNAL_CACHE[coin]
-                    age = current_time - cached['time']
-                    if age < CACHE_DURATION:
-                        signals.append(cached['signal'])
-                        logger.info(f"📦 CACHED: {coin} ({int(age/60)}min)")
-                    else:
-                        del SIGNAL_CACHE[coin]
-            
-            time.sleep(0.3)  # Rate limiting
+                logger.info(f"✅ {coin} {result['direction']} Score:{result['score']} Regime:{result['regime']}")
+            time.sleep(0.15)  # Fast but safe
         except Exception as e:
-            logger.error(f"Error {coin}: {e}")
+            logger.error(f"Error {coin}: {str(e)[:50]}")
     
-    # Clean expired cache
-    expired = [k for k, v in SIGNAL_CACHE.items() if current_time - v['time'] > CACHE_DURATION]
-    for k in expired:
-        del SIGNAL_CACHE[k]
-    
-    logger.info(f"📊 Done. {len(signals)} signals.")
+    logger.info(f"📊 Found {len(signals)} signals")
     return sorted(signals, key=lambda x: x['score'], reverse=True)
 
 # ============================================
@@ -338,63 +380,45 @@ def run_scan():
 # ============================================
 
 async def background_scanner(app):
-    global SIGNALS_TODAY, SENT_SIGNALS
+    global SIGNALS_TODAY
     
-    logger.info("🚀 TradingView Scanner starting...")
-    await asyncio.sleep(10)
+    logger.info("🚀 Pro Scanner v6 starting...")
+    await asyncio.sleep(5)
     
     if ADMIN_CHAT_ID:
         try:
             await app.bot.send_message(
                 chat_id=int(ADMIN_CHAT_ID),
-                text="🤖 TradingView Bot started!\nAuto scanning every 3 min.\n2 hour cooldown per coin."
+                text="🤖 **Pro Scanner v6**\n"
+                     "━━━━━━━━━━━━━━━━━━━━\n"
+                     "📊 Market Regime Filter\n"
+                     "📈 Dynamic ATR-based SL/TP\n"
+                     "🔄 2 min scan interval\n"
+                     "🚫 15min duplicate filter\n"
+                     "━━━━━━━━━━━━━━━━━━━━"
             )
         except:
             pass
     
     while True:
         try:
-            logger.info("🔄 AUTO SCAN cycle...")
-            current_time = time.time()
-            
-            # Clean expired cooldowns
-            expired_cooldowns = [k for k, v in SENT_SIGNALS.items() if current_time - v > SIGNAL_COOLDOWN]
-            for k in expired_cooldowns:
-                del SENT_SIGNALS[k]
-                logger.info(f"♻️ Cooldown expired: {k}")
+            logger.info("🔄 SCANNING...")
             
             loop = asyncio.get_event_loop()
             signals = await loop.run_in_executor(None, run_scan)
             
             if signals and ADMIN_CHAT_ID:
-                # Filter out coins on cooldown
-                new_signals = []
-                for sig in signals:
-                    coin = sig['symbol'].split('/')[0]
-                    if coin not in SENT_SIGNALS:
-                        new_signals.append(sig)
-                    else:
-                        cooldown_left = int((SIGNAL_COOLDOWN - (current_time - SENT_SIGNALS[coin])) / 60)
-                        logger.info(f"⏳ {coin} on cooldown ({cooldown_left}min left)")
-                
-                if new_signals:
-                    logger.info(f"📤 Sending {len(new_signals[:2])} new signals")
-                    try:
-                        for sig in new_signals[:2]:  # Max 2 different coins per cycle
-                            coin = sig['symbol'].split('/')[0]
-                            SENT_SIGNALS[coin] = current_time
-                            SIGNALS_TODAY += 1
-                            await app.bot.send_message(chat_id=int(ADMIN_CHAT_ID), text=format_signal(sig))
-                            await asyncio.sleep(2)
-                    except Exception as e:
-                        logger.error(f"Send error: {e}")
+                logger.info(f"🎯 Sending {min(len(signals), 3)} signals")
+                for sig in signals[:3]:
+                    SIGNALS_TODAY += 1
+                    await app.bot.send_message(chat_id=int(ADMIN_CHAT_ID), text=format_signal(sig))
+                    await asyncio.sleep(1)
             
-            logger.info(f"⏰ Next scan in {SCAN_INTERVAL}s...")
             await asyncio.sleep(SCAN_INTERVAL)
             
         except Exception as e:
-            logger.error(f"Scanner error: {e}")
-            await asyncio.sleep(60)
+            logger.error(f"Error: {e}")
+            await asyncio.sleep(30)
 
 # ============================================
 # TELEGRAM
@@ -404,66 +428,65 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_message.chat_id
     
     await update.message.reply_text(
-        f"🏆 **TRADINGVIEW SIGNAL BOT**\n"
+        f"🏆 **PRO SCANNER v6**\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
         f"📊 Coins: {len(COINS)}\n"
-        f"⏱ Scan: Every {SCAN_INTERVAL//60} min\n\n"
-        f"**SIGNAL CRITERIA:**\n"
-        f"• 15m + 1H must align\n"
-        f"• BUY or STRONG_BUY\n"
-        f"• RSI not extreme\n"
-        f"• Score ≥ 75/100\n\n"
-        f"Your Chat ID: `{chat_id}`\n"
-        f"Add as ADMIN_CHAT_ID in Railway!"
+        f"⏱ Scan: {SCAN_INTERVAL}s\n\n"
+        f"**FEATURES:**\n"
+        f"• Market Regime Filter\n"
+        f"• Dynamic ATR SL/TP\n"
+        f"• 15m Duplicate Filter\n"
+        f"• Multi-TF Analysis\n\n"
+        f"Chat ID: `{chat_id}`"
     )
 
 async def scan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🔍 TradingView scan starting...")
+    await update.message.reply_text("🔍 Pro scan starting...")
     
     loop = asyncio.get_event_loop()
     signals = await loop.run_in_executor(None, run_scan)
     
     if signals:
-        summary = f"📊 **TRADINGVIEW SIGNALS**\nFound: {len(signals)}\n\n"
+        summary = f"📊 **FOUND {len(signals)} SIGNALS**\n\n"
         for s in signals[:5]:
             emoji = "🟢" if s['direction'] == "LONG" else "🔴"
-            summary += f"{emoji} {s['symbol']}: {s['direction']} ({s['score']})\n"
+            summary += f"{emoji} {s['symbol']}: {s['direction']} ({s['score']}) {s['regime']}\n"
         await update.message.reply_text(summary)
         
-        for sig in signals[:2]:
+        for sig in signals[:3]:
             await update.message.reply_text(format_signal(sig))
     else:
-        await update.message.reply_text(
-            "❌ No signals found.\n\n"
-            "TradingView requires:\n"
-            "• 15m + 1H both BUY/SELL\n"
-            "• RSI not extreme\n"
-            "• Score ≥ 75"
-        )
+        await update.message.reply_text("❌ No signals found")
 
-async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show signal statistics"""
+    total = len(SIGNAL_HISTORY)
+    longs = len([s for s in SIGNAL_HISTORY if s['direction'] == 'LONG'])
+    shorts = total - longs
+    
     await update.message.reply_text(
-        f"📊 **STATUS**\n"
+        f"📊 **STATISTICS**\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"Source: TradingView TA\n"
-        f"Coins: {len(COINS)}\n"
-        f"Interval: {SCAN_INTERVAL//60}min\n"
         f"Signals Today: {SIGNALS_TODAY}\n"
-        f"Cached: {len(SIGNAL_CACHE)}"
+        f"Total History: {total}\n"
+        f"Longs: {longs} | Shorts: {shorts}\n"
+        f"Active Duplicates: {len(RECENT_SIGNALS)}"
     )
 
 async def post_init(app):
     asyncio.create_task(background_scanner(app))
 
 if __name__ == '__main__':
-    print("🏆 TradingView Signal Bot")
-    print("Testing TradingView API...")
+    print("🏆 Pro Scanner v6")
+    print("Testing TradingView...")
     
     test = get_tv_analysis("BTC", Interval.INTERVAL_15_MINUTES)
     if test:
-        print(f"✅ TradingView OK - BTC: {test.summary.get('RECOMMENDATION')}")
+        rec = test.summary.get('RECOMMENDATION', 'N/A')
+        adx = test.indicators.get('ADX', 0)
+        print(f"✅ BTC: {rec} | ADX: {adx:.0f}")
     else:
-        print("❌ TradingView connection failed")
+        print("❌ TradingView failed")
     
     if not ADMIN_CHAT_ID:
         print("⚠️ ADMIN_CHAT_ID not set!")
@@ -472,7 +495,7 @@ if __name__ == '__main__':
     
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("scan", scan_cmd))
-    app.add_handler(CommandHandler("status", status_cmd))
+    app.add_handler(CommandHandler("stats", stats_cmd))
     
-    print("🚀 Bot running...")
+    print("🚀 Running...")
     app.run_polling()
