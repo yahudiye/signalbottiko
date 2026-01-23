@@ -606,11 +606,21 @@ def scalp_analyze(symbol: str) -> Optional[Dict]:
     
     # ═══════ FILTERS ═══════
     
-    # BTC RSI Filter
+    # BTC RSI Filter (basic)
     if direction == "LONG" and BTC_RSI < 45:
         return None
     if direction == "SHORT" and BTC_RSI > 55:
         return None
+    
+    # BTC TREND Filter (strict) - NEW!
+    # LONG sinyali için BTC BEARISH olmamalı (yüksek skorlu hariç)
+    # SHORT sinyali için BTC BULLISH olmamalı
+    if direction == "LONG" and BTC_TREND == "BEARISH":
+        if score < 90:  # Sadece 90+ skorlu sinyaller bypass edebilir
+            return None
+    if direction == "SHORT" and BTC_TREND == "BULLISH":
+        if score < 90:
+            return None
     
     # Improved Fake Breakout Filter
     if high and low and close and open_price:
