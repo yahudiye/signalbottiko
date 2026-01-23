@@ -774,6 +774,21 @@ def run_scan() -> List[Dict]:
 # MESSAGE FORMATTERS
 # ═══════════════════════════════════════════════════════════════
 
+def format_price(price: float) -> str:
+    """Akıllı fiyat formatlama - düşük fiyatlı coinler için daha fazla decimal"""
+    if price == 0:
+        return "$0.00"
+    elif price < 0.0001:
+        return f"${price:.8f}"
+    elif price < 0.01:
+        return f"${price:.6f}"
+    elif price < 1:
+        return f"${price:.5f}"
+    elif price < 100:
+        return f"${price:.4f}"
+    else:
+        return f"${price:.2f}"
+
 def format_signal(s: Dict, signal_id: int = None) -> str:
     """Sinyal mesajını formatla - improved"""
     emoji = "🟢" if s['direction'] == "LONG" else "🔴"
@@ -803,11 +818,11 @@ def format_signal(s: Dict, signal_id: int = None) -> str:
 • 1m: {s['rec_1m']} | 5m: {s['rec_5m']} | 15m: {s['rec_15m']}
 
 💰 **LEVELS (ATR):**
-┌ Entry: `${s['entry']:.4f}`
-├ SL: `${s['sl']:.4f}` (-{s['sl_pct']:.2f}%)
-├ TP1: `${s['tp1']:.4f}` (+{s['tp1_pct']:.2f}%) [{s['rr1']:.1f}R]
-├ TP2: `${s['tp2']:.4f}` (+{s['tp2_pct']:.2f}%) [{s['rr2']:.1f}R]
-└ TP3: `${s['tp3']:.4f}` (+{s['tp3_pct']:.2f}%) [{s['rr3']:.1f}R]
+┌ Entry: `{format_price(s['entry'])}`
+├ SL: `{format_price(s['sl'])}` (-{s['sl_pct']:.2f}%)
+├ TP1: `{format_price(s['tp1'])}` (+{s['tp1_pct']:.2f}%) [{s['rr1']:.1f}R]
+├ TP2: `{format_price(s['tp2'])}` (+{s['tp2_pct']:.2f}%) [{s['rr2']:.1f}R]
+└ TP3: `{format_price(s['tp3'])}` (+{s['tp3_pct']:.2f}%) [{s['rr3']:.1f}R]
 
 📋 **CONFIRMATIONS:**
 """
