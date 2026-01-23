@@ -107,8 +107,8 @@ PCT_TP3 = 2.0
 MAX_LEVERAGE_HIGH = 20          # Score >= 85
 MAX_LEVERAGE_NORMAL = 15        # Score < 85
 
-# Dangerous hours (UTC) - NY Open, London Open, Funding
-DANGEROUS_HOURS = [0, 8, 12, 13, 20, 21]
+# Dangerous hours (UTC) - Only funding hours (less restrictive)
+DANGEROUS_HOURS = [0, 8]  # Sadece funding saatleri - daha fazla sinyal için
 
 # Scoring weights
 WEIGHTS = {
